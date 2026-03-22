@@ -1,0 +1,103 @@
+<div class="container">
+  <header>
+    <h1>DataTalk</h1>
+    <p class="subtitle">Ask questions about your data in plain English</p>
+  </header>
+
+  <!-- Upload Section -->
+  <section class="card">
+    <h2>1. Upload a CSV file</h2>
+    <input type="file" accept=".csv" (change)="onFileSelected($event)" [disabled]="uploading" />
+    @if (uploading) {
+      <p class="status">Uploading...</p>
+    }
+    @if (uploadError) {
+      <p class="error">{{ uploadError }}</p>
+    }
+  </section>
+
+  <!-- Preview Section -->
+  @if (preview.length > 0) {
+    <section class="card">
+      <h2>Preview: {{ filename }}</h2>
+      <p class="meta">
+        {{ columns.length }} columns:
+        @for (col of columns; track col.name) {
+          <span class="badge">{{ col.name }} <small>({{ col.dtype }})</small></span>
+        }
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              @for (header of previewHeaders; track header) {
+                <th>{{ header }}</th>
+              }
+            </tr>
+          </thead>
+          <tbody>
+            @for (row of preview; track $index) {
+              <tr>
+                @for (header of previewHeaders; track header) {
+                  <td>{{ row[header] }}</td>
+                }
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Query Section -->
+    <section class="card">
+      <h2>2. Ask a question</h2>
+      <div class="query-input">
+        <input
+          type="text"
+          [(ngModel)]="question"
+          placeholder="e.g. What is the average salary by department?"
+          (keyup.enter)="submitQuery()"
+          [disabled]="querying"
+        />
+        <button (click)="submitQuery()" [disabled]="querying || !question.trim()">
+          {{ querying ? 'Thinking...' : 'Ask' }}
+        </button>
+      </div>
+    </section>
+
+    <!-- Results Section -->
+    @if (generatedQuery) {
+      <section class="card">
+        <h2>Result</h2>
+        <p class="generated-query"><strong>Generated query:</strong> <code>{{ generatedQuery }}</code></p>
+
+        @if (queryError) {
+          <p class="error">{{ queryError }}</p>
+        }
+
+        @if (queryResult && queryResult.length > 0) {
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  @for (header of resultHeaders; track header) {
+                    <th>{{ header }}</th>
+                  }
+                </tr>
+              </thead>
+              <tbody>
+                @for (row of queryResult; track $index) {
+                  <tr>
+                    @for (header of resultHeaders; track header) {
+                      <td>{{ row[header] }}</td>
+                    }
+                  </tr>
+                }
+              </tbody>
+            </table>
+          </div>
+        }
+      </section>
+    }
+  }
+</div>
