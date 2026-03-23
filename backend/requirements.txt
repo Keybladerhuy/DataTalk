@@ -4,5 +4,8 @@ pandas
 anthropic
 python-multipart
 python-dotenv
+pydantic-settings
+google-genai
+openai
 pytest
 httpx

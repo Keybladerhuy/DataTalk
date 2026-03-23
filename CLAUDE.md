@@ -4,16 +4,17 @@ LLM-powered natural language data query tool. Upload a CSV, ask questions in Eng
 
 ## Tech Stack
 
-- **Backend**: Python 3.11+, FastAPI, pandas, Anthropic SDK
+- **Backend**: Python 3.11+, FastAPI, pandas, pydantic-settings
 - **Frontend**: Angular 19, standalone components, plain CSS
-- **LLM**: Claude API (`claude-sonnet-4-6-20250514`)
+- **LLM**: Multi-provider — Anthropic, Google Gemini, OpenAI (configurable via `.env`)
 - No auth, no Docker
 
 ## Project Structure
 
-- `backend/main.py` — single-file FastAPI app (all endpoints + LLM logic)
+- `backend/main.py` — FastAPI app (endpoints + sandboxed eval)
+- `backend/config.py` — pydantic-settings config (provider, model, API keys)
+- `backend/llm.py` — LLM provider dispatch + query generation
 - `frontend/src/app/app.component.*` — single Angular component (upload + query + results)
-- Flat structure is intentional for MVP; split files when complexity warrants it
 
 ## Dev Commands
 
@@ -25,13 +26,13 @@ cd backend && uvicorn main:app --reload
 cd frontend && npm start
 ```
 
-Requires env var: `ANTHROPIC_API_KEY`
+Requires `.env` with `LLM_PROVIDER` and the corresponding API key (see `.env.example`)
 
 ## Coding Conventions
 
 ### Backend
-- Single `main.py` — no module splitting yet
-- Pydantic `BaseModel` for request bodies
+- `main.py` for endpoints, `config.py` for settings, `llm.py` for LLM logic
+- Pydantic `BaseModel` for request bodies, `pydantic-settings` for config
 - Global `store` dict for in-memory DataFrame state (one CSV at a time)
 - `safe_eval()` with restricted `__builtins__` (SAFE_BUILTINS allowlist) — only `df` and `pd` in eval scope
 
@@ -42,7 +43,9 @@ Requires env var: `ANTHROPIC_API_KEY`
 - No service layer — HTTP calls live in the component for now
 
 ### LLM Integration
+- Multi-provider: Anthropic, Google Gemini, OpenAI — configured via `LLM_PROVIDER` in `.env`
+- Provider dispatch in `llm.py` — each provider has a `_call_*` function, routed by `call_llm()`
 - DataFrame schema (column names + dtypes) injected into the system prompt
-- Claude returns a bare pandas expression (no markdown, no explanation)
+- LLM returns a bare pandas expression (no markdown, no explanation)
 - Expression executed via sandboxed `eval()` against `df`
-- On failure: one retry with the error message fed back to Claude
+- On failure: one retry with the error message fed back to the LLM

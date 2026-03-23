@@ -1,7 +1,7 @@
 import pytest
 from httpx import AsyncClient
 
-from conftest import make_mock_response
+from conftest import make_llm_result
 
 VALID_CSV = b"name,age,city\nAlice,30,NYC\nBob,25,LA\nCharlie,35,Chicago"
 
@@ -18,9 +18,9 @@ async def test_query_no_dataset(client: AsyncClient):
 
 
 @pytest.mark.anyio
-async def test_query_successful(client: AsyncClient, mock_anthropic):
+async def test_query_successful(client: AsyncClient, mock_llm):
     await upload_csv(client)
-    mock_anthropic.messages.create.return_value = make_mock_response("df['age'].mean()")
+    mock_llm.return_value = make_llm_result("df['age'].mean()")
 
     resp = await client.post("/query", json={"question": "What is the average age?"})
     assert resp.status_code == 200
@@ -31,11 +31,24 @@ async def test_query_successful(client: AsyncClient, mock_anthropic):
 
 
 @pytest.mark.anyio
-async def test_query_returns_dataframe(client: AsyncClient, mock_anthropic):
+async def test_query_returns_usage(client: AsyncClient, mock_llm):
+    """Response should include token usage."""
     await upload_csv(client)
-    mock_anthropic.messages.create.return_value = make_mock_response(
-        "df[['name', 'age']].head(2)"
-    )
+    mock_llm.return_value = make_llm_result("df['age'].mean()")
+
+    resp = await client.post("/query", json={"question": "What is the average age?"})
+    data = resp.json()
+    usage = data["usage"]
+    assert usage["input_tokens"] == 10
+    assert usage["output_tokens"] == 5
+    assert usage["total_tokens"] == 15
+    assert usage["llm_calls"] == 1
+
+
+@pytest.mark.anyio
+async def test_query_returns_dataframe(client: AsyncClient, mock_llm):
+    await upload_csv(client)
+    mock_llm.return_value = make_llm_result("df[['name', 'age']].head(2)")
 
     resp = await client.post("/query", json={"question": "Show first 2 rows"})
     data = resp.json()
@@ -45,28 +58,30 @@ async def test_query_returns_dataframe(client: AsyncClient, mock_anthropic):
 
 
 @pytest.mark.anyio
-async def test_query_retries_on_error(client: AsyncClient, mock_anthropic):
+async def test_query_retries_on_error(client: AsyncClient, mock_llm):
     """First expression fails, second succeeds."""
     await upload_csv(client)
-    mock_anthropic.messages.create.side_effect = [
-        make_mock_response("df['nonexistent']"),  # will raise KeyError
-        make_mock_response("df['age'].mean()"),   # retry succeeds
+    mock_llm.side_effect = [
+        make_llm_result("df['nonexistent']"),  # will raise KeyError
+        make_llm_result("df['age'].mean()"),   # retry succeeds
     ]
 
     resp = await client.post("/query", json={"question": "Average age?"})
     data = resp.json()
     assert data["error"] is None
     assert data["result"] == [{"result": 30.0}]
-    assert mock_anthropic.messages.create.call_count == 2
+    assert mock_llm.call_count == 2
+    assert data["usage"]["llm_calls"] == 2
+    assert data["usage"]["total_tokens"] == 30  # 15 per call
 
 
 @pytest.mark.anyio
-async def test_query_fails_after_retry(client: AsyncClient, mock_anthropic):
+async def test_query_fails_after_retry(client: AsyncClient, mock_llm):
     """Both attempts fail."""
     await upload_csv(client)
-    mock_anthropic.messages.create.side_effect = [
-        make_mock_response("df['bad1']"),
-        make_mock_response("df['bad2']"),
+    mock_llm.side_effect = [
+        make_llm_result("df['bad1']"),
+        make_llm_result("df['bad2']"),
     ]
 
     resp = await client.post("/query", json={"question": "Something impossible"})
@@ -74,14 +89,15 @@ async def test_query_fails_after_retry(client: AsyncClient, mock_anthropic):
     assert data["error"] is not None
     assert "Query failed after retry" in data["error"]
     assert data["result"] is None
+    assert data["usage"]["llm_calls"] == 2
 
 
 @pytest.mark.anyio
-async def test_sandbox_blocks_import(client: AsyncClient, mock_anthropic):
+async def test_sandbox_blocks_import(client: AsyncClient, mock_llm):
     await upload_csv(client)
-    mock_anthropic.messages.create.side_effect = [
-        make_mock_response("__import__('os').system('echo pwned')"),
-        make_mock_response("__import__('os').listdir('.')"),
+    mock_llm.side_effect = [
+        make_llm_result("__import__('os').system('echo pwned')"),
+        make_llm_result("__import__('os').listdir('.')"),
     ]
 
     resp = await client.post("/query", json={"question": "hack me"})
@@ -90,11 +106,11 @@ async def test_sandbox_blocks_import(client: AsyncClient, mock_anthropic):
 
 
 @pytest.mark.anyio
-async def test_sandbox_blocks_open(client: AsyncClient, mock_anthropic):
+async def test_sandbox_blocks_open(client: AsyncClient, mock_llm):
     await upload_csv(client)
-    mock_anthropic.messages.create.side_effect = [
-        make_mock_response("open('/etc/passwd').read()"),
-        make_mock_response("open('test.txt', 'w').write('x')"),
+    mock_llm.side_effect = [
+        make_llm_result("open('/etc/passwd').read()"),
+        make_llm_result("open('test.txt', 'w').write('x')"),
     ]
 
     resp = await client.post("/query", json={"question": "read a file"})
@@ -103,11 +119,11 @@ async def test_sandbox_blocks_open(client: AsyncClient, mock_anthropic):
 
 
 @pytest.mark.anyio
-async def test_query_with_nan_in_result(client: AsyncClient, mock_anthropic):
+async def test_query_with_nan_in_result(client: AsyncClient, mock_llm):
     """Results containing NaN should be serializable."""
     csv_with_nan = b"name,score\nAlice,90\nBob,\nCharlie,85"
     await upload_csv(client, csv_with_nan)
-    mock_anthropic.messages.create.return_value = make_mock_response("df")
+    mock_llm.return_value = make_llm_result("df")
 
     resp = await client.post("/query", json={"question": "Show all data"})
     assert resp.status_code == 200

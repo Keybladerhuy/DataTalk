@@ -1,14 +1,11 @@
 from io import StringIO
 
-from dotenv import load_dotenv
-
-load_dotenv()
-
-import anthropic
 import pandas as pd
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+from llm import generate_query
 
 app = FastAPI(title="DataTalk API")
 
@@ -21,8 +18,6 @@ app.add_middleware(
 
 # Global state: single DataFrame at a time
 store: dict = {"df": None, "filename": None}
-
-client = anthropic.Anthropic()  # uses ANTHROPIC_API_KEY env var
 
 
 class QueryRequest(BaseModel):
@@ -64,49 +59,6 @@ def safe_eval(expression: str, df: pd.DataFrame):
     return eval(expression, allowed_globals)
 
 
-# --- LLM helpers ---
-
-SYSTEM_PROMPT_TEMPLATE = """You are a data analyst assistant. The user has loaded a pandas DataFrame called `df` with the following schema:
-
-{schema}
-
-When the user asks a question, respond with ONLY a single valid Python pandas expression that answers the question. The expression will be evaluated against the variable `df`.
-
-Rules:
-- Return ONLY the expression, no explanation, no markdown, no code fences
-- The expression must be valid Python that works with pandas
-- Use `df` as the DataFrame variable name
-- You may use `pd` (pandas) for helper functions like pd.to_datetime()
-- Do NOT use import statements, open(), exec(), eval(), or any file/system operations"""
-
-
-def build_schema(df: pd.DataFrame) -> str:
-    lines = []
-    for col in df.columns:
-        lines.append(f"- {col}: {df[col].dtype}")
-    return f"Columns ({len(df.columns)} total):\n" + "\n".join(lines)
-
-
-def generate_query(question: str, df: pd.DataFrame, error_context: str | None = None) -> str:
-    schema = build_schema(df)
-    system = SYSTEM_PROMPT_TEMPLATE.format(schema=schema)
-
-    user_message = question
-    if error_context:
-        user_message = (
-            f"Previous attempt to answer this question failed with error:\n{error_context}\n\n"
-            f"Please try a different approach. Original question: {question}"
-        )
-
-    response = client.messages.create(
-        model="claude-sonnet-4-6-20250514",
-        max_tokens=512,
-        system=system,
-        messages=[{"role": "user", "content": user_message}],
-    )
-    return response.content[0].text.strip()
-
-
 # --- Endpoints ---
 
 
@@ -137,21 +89,24 @@ async def query_data(request: QueryRequest):
         raise HTTPException(status_code=400, detail="No dataset loaded. Upload a CSV first.")
 
     # First attempt
-    expression = generate_query(request.question, df)
+    qr = generate_query(request.question, df)
     try:
-        result = safe_eval(expression, df)
+        result = safe_eval(qr.expression, df)
     except Exception as first_error:
         # Retry once with error feedback
         try:
-            expression = generate_query(
-                request.question, df, error_context=f"Expression: {expression}\nError: {first_error}"
+            retry_qr = generate_query(
+                request.question, df, error_context=f"Expression: {qr.expression}\nError: {first_error}"
             )
-            result = safe_eval(expression, df)
+            qr.expression = retry_qr.expression
+            qr.usage.extend(retry_qr.usage)
+            result = safe_eval(qr.expression, df)
         except Exception as second_error:
             return {
-                "query": expression,
+                "query": qr.expression,
                 "result": None,
                 "error": f"Query failed after retry: {second_error}",
+                "usage": qr.total_usage,
             }
 
     # Normalize result to list of dicts for JSON response
@@ -162,4 +117,4 @@ async def query_data(request: QueryRequest):
     else:
         result_data = [{"result": result}]
 
-    return {"query": expression, "result": result_data, "error": None}
+    return {"query": qr.expression, "result": result_data, "error": None, "usage": qr.total_usage}
